@@ -8,6 +8,7 @@ crud_app.py 회귀·안전성 테스트
 import json
 import sys
 import time
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -15,14 +16,24 @@ from pydantic import ValidationError
 import crud_app
 from crud_app import (
     Contact,
+    _ask,
     _load_records,
     _next_id,
+    _pick_group,
+    _print_errors,
+    _print_row,
     _save_records,
+    _sep,
     create_contact,
     delete_contact,
+    main,
     read_all,
     read_by_id,
     search_contacts,
+    ui_create,
+    ui_delete,
+    ui_read,
+    ui_update,
     update_contact,
 )
 
@@ -510,3 +521,282 @@ class TestIntegration:
         assert "수정된이름" in names
         assert "이름2" in names
         assert "이름0" not in names
+
+
+# ──────────────────────────────────────────────────────────
+# UI 헬퍼 함수
+# ──────────────────────────────────────────────────────────
+
+class TestHelpers:
+    def test_sep_default(self, capsys):
+        _sep()
+        assert "─" * 55 in capsys.readouterr().out
+
+    def test_sep_custom(self, capsys):
+        _sep("=", 10)
+        assert "=" * 10 in capsys.readouterr().out
+
+    def test_ask_returns_input(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "홍길동")
+        assert _ask("이름") == "홍길동"
+
+    def test_ask_empty_returns_default(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        assert _ask("이름", "기본값") == "기본값"
+
+    def test_ask_empty_no_default_returns_empty(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        assert _ask("이름") == ""
+
+    def test_pick_group_valid_first(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "2")
+        assert _pick_group() == "친구"
+
+    def test_pick_group_invalid_then_valid(self, monkeypatch, capsys):
+        inputs = iter(["9", "abc", "3"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        result = _pick_group()
+        assert result == "직장"
+        assert "1~4" in capsys.readouterr().out
+
+    def test_pick_group_default_4(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        assert _pick_group() == "기타"
+
+    def test_print_row_no_memo(self, capsys):
+        c = Contact(id=1, name="홍길동", phone="010-1234-5678",
+                    email="hong@test.com", group="친구")
+        _print_row(c)
+        out = capsys.readouterr().out
+        assert "홍길동" in out
+        assert "메모" not in out
+
+    def test_print_row_with_memo(self, capsys):
+        c = Contact(id=1, name="홍길동", phone="010-1234-5678",
+                    email="", group="기타", memo="메모내용")
+        _print_row(c)
+        out = capsys.readouterr().out
+        assert "메모내용" in out
+
+    def test_print_errors(self, capsys):
+        try:
+            Contact.model_validate({"id": 1, "name": "", "phone": "010-1234-5678",
+                                    "email": "", "group": "기타", "memo": "",
+                                    "created_at": "", "updated_at": ""})
+        except ValidationError as e:
+            _print_errors(e)
+        assert "검증 오류" in capsys.readouterr().out
+
+
+# ──────────────────────────────────────────────────────────
+# UI: ui_create
+# ──────────────────────────────────────────────────────────
+
+class TestUiCreate:
+    # ui_create 입력 순서: 이름, 전화번호, 이메일, 그룹(1-4), 메모
+
+    def test_success(self, monkeypatch, capsys):
+        inputs = iter(["홍길동", "010-1234-5678", "", "1", ""])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_create()
+        assert "저장 완료" in capsys.readouterr().out
+
+    def test_empty_name_returns_early(self, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda _: "")
+        ui_create()
+        assert "필수" in capsys.readouterr().out
+        assert read_all() == []
+
+    def test_empty_phone_returns_early(self, monkeypatch, capsys):
+        inputs = iter(["홍길동", ""])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_create()
+        assert "필수" in capsys.readouterr().out
+        assert read_all() == []
+
+    def test_invalid_phone_shows_validation_error(self, monkeypatch, capsys):
+        inputs = iter(["홍길동", "123", "", "1", ""])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_create()
+        assert "검증 오류" in capsys.readouterr().out
+        assert read_all() == []
+
+
+# ──────────────────────────────────────────────────────────
+# UI: ui_read
+# ──────────────────────────────────────────────────────────
+
+class TestUiRead:
+    def test_list_all_with_records(self, monkeypatch, capsys):
+        create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        monkeypatch.setattr("builtins.input", lambda _: "1")
+        ui_read()
+        assert "홍길동" in capsys.readouterr().out
+
+    def test_list_all_empty_db(self, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda _: "1")
+        ui_read()
+        assert "없습니다" in capsys.readouterr().out
+
+    def test_search_by_id_found(self, monkeypatch, capsys):
+        c = create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        inputs = iter(["2", str(c.id)])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_read()
+        assert "홍길동" in capsys.readouterr().out
+
+    def test_search_by_id_not_found(self, monkeypatch, capsys):
+        inputs = iter(["2", "9999"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_read()
+        assert "찾을 수 없습니다" in capsys.readouterr().out
+
+    def test_search_by_id_non_digit(self, monkeypatch, capsys):
+        inputs = iter(["2", "abc"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_read()
+        assert "숫자" in capsys.readouterr().out
+
+    def test_keyword_search_found(self, monkeypatch, capsys):
+        create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        inputs = iter(["3", "홍길동"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_read()
+        assert "홍길동" in capsys.readouterr().out
+
+    def test_keyword_search_no_results(self, monkeypatch, capsys):
+        create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        inputs = iter(["3", "없는이름"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_read()
+        assert "결과가 없습니다" in capsys.readouterr().out
+
+    def test_keyword_search_empty_input(self, monkeypatch, capsys):
+        inputs = iter(["3", ""])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_read()
+        assert "검색어" in capsys.readouterr().out
+
+    def test_invalid_choice(self, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda _: "9")
+        ui_read()
+        assert "올바른" in capsys.readouterr().out
+
+
+# ──────────────────────────────────────────────────────────
+# UI: ui_update
+# ──────────────────────────────────────────────────────────
+
+class TestUiUpdate:
+    # 입력 순서: ID, 이름, 전화번호, 이메일, 메모, 그룹변경여부(, 그룹번호)
+
+    def test_non_digit_id(self, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda _: "abc")
+        ui_update()
+        assert "숫자" in capsys.readouterr().out
+
+    def test_id_not_found(self, monkeypatch, capsys):
+        inputs = iter(["9999"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_update()
+        assert "찾을 수 없습니다" in capsys.readouterr().out
+
+    def test_no_changes(self, monkeypatch, capsys):
+        c = create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        # 모든 필드 엔터(기본값 유지), 그룹 변경 N
+        inputs = iter([str(c.id), "", "", "", "", "N"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_update()
+        assert "변경 사항 없음" in capsys.readouterr().out
+
+    def test_name_change(self, monkeypatch, capsys):
+        c = create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        inputs = iter([str(c.id), "홍길순", "", "", "", "N"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_update()
+        assert "수정 완료" in capsys.readouterr().out
+        assert read_by_id(c.id).name == "홍길순"
+
+    def test_group_change(self, monkeypatch, capsys):
+        c = create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        inputs = iter([str(c.id), "", "", "", "", "y", "1"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_update()
+        assert "수정 완료" in capsys.readouterr().out
+        assert read_by_id(c.id).group == "가족"
+
+    def test_invalid_phone_shows_error(self, monkeypatch, capsys):
+        c = create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        inputs = iter([str(c.id), "", "bad", "", "", "N"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_update()
+        assert "검증 오류" in capsys.readouterr().out
+        assert read_by_id(c.id).phone == "010-1111-1111"
+
+
+# ──────────────────────────────────────────────────────────
+# UI: ui_delete
+# ──────────────────────────────────────────────────────────
+
+class TestUiDelete:
+    def test_non_digit_id(self, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda _: "abc")
+        ui_delete()
+        assert "숫자" in capsys.readouterr().out
+
+    def test_id_not_found(self, monkeypatch, capsys):
+        inputs = iter(["9999"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_delete()
+        assert "찾을 수 없습니다" in capsys.readouterr().out
+
+    def test_cancel_delete(self, monkeypatch, capsys):
+        c = create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        inputs = iter([str(c.id), "N"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_delete()
+        assert "취소" in capsys.readouterr().out
+        assert read_by_id(c.id) is not None
+
+    def test_confirm_delete(self, monkeypatch, capsys):
+        c = create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        inputs = iter([str(c.id), "y"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        ui_delete()
+        assert "삭제 완료" in capsys.readouterr().out
+        assert read_by_id(c.id) is None
+
+    def test_delete_failure_branch(self, monkeypatch, capsys):
+        """read_by_id 는 성공하지만 delete_contact 가 False 를 반환하는 경로."""
+        c = create_contact("홍길동", "010-1111-1111", "", "기타", "")
+        inputs = iter([str(c.id), "y"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        with patch.object(crud_app, "delete_contact", return_value=False):
+            ui_delete()
+        assert "삭제 실패" in capsys.readouterr().out
+
+
+# ──────────────────────────────────────────────────────────
+# UI: main 루프
+# ──────────────────────────────────────────────────────────
+
+class TestMain:
+    def test_exit_immediately(self, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda _: "0")
+        main()
+        assert "종료" in capsys.readouterr().out
+
+    def test_invalid_menu_then_exit(self, monkeypatch, capsys):
+        inputs = iter(["9", "0"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        main()
+        assert "올바른 메뉴" in capsys.readouterr().out
+
+    def test_menu_dispatches_to_handler(self, monkeypatch, capsys):
+        # MENU 딕셔너리의 "1" 항목을 no-op 함수로 교체해 디스패치 경로를 검증한다.
+        called = []
+        monkeypatch.setitem(crud_app.MENU, "1", ("[C] 추가", lambda: called.append(1)))
+        inputs = iter(["1", "0"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        main()
+        assert called == [1]

@@ -372,5 +372,5 @@ def main() -> None:
             print("  올바른 메뉴 번호를 선택하세요.")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
