@@ -118,12 +118,21 @@ class Contact(BaseModel):
 
 | 함수 | 역할 |
 |------|------|
-| `create_contact(...)` | 검증 후 records에 append → 파일 저장 |
+| `create_contact(...)` | `model_validate()` 검증 후 append → `json.dump()` 저장 |
 | `read_all()` | 전체 레코드 → `Contact` 리스트 반환 |
-| `read_by_id(id)` | 단건 조회, 없으면 `None` |
-| `search_by_name(keyword)` | 이름 부분 일치 검색 |
-| `update_contact(id, **kwargs)` | 변경 필드만 dict update 후 재검증 저장 |
+| `read_by_id(id)` | ID 단건 조회, 없으면 `None` |
+| `search_contacts(keyword)` | 이름·이메일·메모 대상 키워드 부분 일치 검색 |
+| `update_contact(id, **fields)` | 변경 필드만 dict update → `model_validate()` 재검증 후 저장 |
 | `delete_contact(id)` | 필터링 후 저장, 성공 여부 `bool` 반환 |
+
+### PoC 코드 구조 대응
+
+| PoC 함수 | crud_app.py 적용 위치 |
+|---|---|
+| `demo_save_file` / `demo_load_file` | `_save_records()` / `_load_records()` |
+| `demo_error_handling` (JSONDecodeError) | `_load_records()` 내 `try/except json.JSONDecodeError` |
+| `demo_pydantic_basic` (ValidationError) | `ui_create` / `ui_update` 의 `except ValidationError` |
+| `demo_pydantic_file_io` (model_validate/model_dump) | `create_contact()`, `update_contact()`, `read_all()` |
 
 ### 저장 파일
 
